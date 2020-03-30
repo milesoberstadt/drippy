@@ -1,0 +1,5 @@
+.svn
+@eaDir/
+bin-debug/
+bin-release-temp/
+bin-release/

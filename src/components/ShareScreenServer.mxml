@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Group xmlns:fx="http://ns.adobe.com/mxml/2009" 
+		 xmlns:s="library://ns.adobe.com/flex/spark" width="100%" height="100%">
+	<fx:Declarations>
+		<!-- Place non-visual elements (e.g., services, value objects) here -->
+	</fx:Declarations>
+	
+	<fx:Script>
+		<![CDATA[
+			import mx.core.FlexGlobals;
+			
+			import objects.DrawingCanvasHolderServer;
+			import objects.SocketEvent;
+			
+			[Bindable]
+			public var drawingCanvasHolder:DrawingCanvasHolderServer;
+			
+			protected function disconnectFromHost(event:MouseEvent):void
+			{
+				if(drawingCanvasHolder)
+				{
+					drawingCanvasHolder.saveAndClear();
+					dispatchEvent(new Event(Event.COMPLETE));
+				}
+			}
+			
+		]]>
+	</fx:Script>
+	<!-- Layer 1, background -->
+	<s:Rect id="background" width="100%" height="100%" alpha="0.8" >
+		<s:fill>
+			<s:SolidColor color="#000000">
+			</s:SolidColor>
+		</s:fill>
+	</s:Rect>
+	
+	<!-- Layer 2, buttons -->
+	<s:Image id="backButton" source="@Embed(source='../assets/back.png')"
+			 bottom="50" left="50" />
+	
+	<s:Group horizontalCenter="0" verticalCenter="0">
+		<s:layout>
+			<s:VerticalLayout gap="10"/>
+		</s:layout>
+		<s:Label text="Sharing options" color="0xFFFFFF" fontSize="56" width="100%" textAlign="center"/>
+		<s:Group>
+			<s:layout>
+				<s:HorizontalLayout gap="50"/>
+			</s:layout>
+			<s:Image id="facebookButton" source="@Embed(source='../assets/facebook-icon.png')"
+					 width="128" height="128" />
+			<s:Image id="twitterButton" source="@Embed(source='../assets/twitter-icon.png')"
+					 width="128" height="128" />
+			<s:Image id="emailButton" source="@Embed(source='../assets/email-icon.png')"
+					 width="128" height="128" />
+		</s:Group>
+	</s:Group>
+	
+	<s:Label text="Clear" fontSize="46" color="0xFFFFFF" 
+			 bottom="50" right="{width*0.5}" click="disconnectFromHost(event)"/>
+	<s:Label text="Clear and Save" fontSize="46" color="0xFFFFFF"
+			 bottom="50" right="50" click="disconnectFromHost(event)"/>
+</s:Group>

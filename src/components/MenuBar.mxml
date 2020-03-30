@@ -1,0 +1,325 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Group
+	xmlns:fx="http://ns.adobe.com/mxml/2009" 
+	xmlns:s="library://ns.adobe.com/flex/spark" 
+	width="800" height="500" xmlns:components="components.*" xmlns:objects="objects.*"
+	addedToStage="ready(event)"
+	>
+	
+	<fx:Declarations>
+		<!-- Place non-visual elements (e.g., services, value objects) here -->
+		<s:ArrayCollection id="topMenuArray">
+			<objects:MenuButton image="{MainBrushButtonImage}"/>
+			<objects:MenuButton image="{MainToolsButtonImage}"/>
+		</s:ArrayCollection>
+		<s:ArrayCollection id="brushMenuArray">
+			<objects:MenuButton image="{ChangeColorButtonImage}"/>
+			<objects:MenuButton image="{ChangeSizeButtonImage}"/>
+			<objects:MenuButton image="{ChangeTypeButtonImage}"/>
+		</s:ArrayCollection>
+		<s:ArrayCollection id="toolMenuArray">
+			<objects:MenuButton image="{StickerButtonImage}"/>
+			<objects:MenuButton image="{StencilButtonImage}"/>
+		</s:ArrayCollection>
+	</fx:Declarations>
+	
+	
+	<s:transitions>
+		<s:Transition fromState="hidden" toState="shown">
+			<s:Parallel>
+				<s:children>
+					<s:Move id="showMenu"
+							target="{menu}" xFrom="{-this.width}" xTo="0" />
+				</s:children>
+			</s:Parallel>
+		</s:Transition>
+		<s:Transition fromState="shown" toState="shownToHidden">
+			<s:Parallel effectEnd="{finishCloseProceedures()}">
+				<s:children>
+					<s:Move id="hideMenu"
+							target="{menu}" xFrom="0" xTo="{-this.width}" />
+				</s:children>
+			</s:Parallel>
+		</s:Transition>
+	</s:transitions>
+	
+	<fx:Script>
+		<![CDATA[
+			import mx.collections.ArrayCollection;
+			import mx.core.FlexGlobals;
+			import mx.core.UIComponent;
+			import mx.events.FlexEvent;
+			
+			import objects.DrawingCanvasHolderServer;
+			
+			import spark.components.Application;
+			
+			//Lets me connect to top level properties
+			[Bindable]
+			private var application:Object = FlexGlobals.topLevelApplication;
+			
+			[Bindable]
+			public var currentDisplayArray:ArrayCollection; 
+			
+			private var previousDisplayArray:ArrayCollection;
+								
+			[Embed('../assets/menuBrushButton.png')]
+			[Bindable]
+			public var MainBrushButtonImage:Class;
+			
+			[Embed('../assets/menuToolsButton.png')]
+			[Bindable]
+			public var MainToolsButtonImage:Class;
+			
+			[Embed('../assets/brushChangeColor.png')]
+			[Bindable]
+			public var ChangeColorButtonImage:Class;
+			
+			[Embed('../assets/brushChangeSize.png')]
+			[Bindable]
+			public var ChangeSizeButtonImage:Class;
+			
+			[Embed('../assets/brushChangeType.png')]
+			[Bindable]
+			public var ChangeTypeButtonImage:Class;
+			
+			[Embed('../assets/toolsStickers.png')]
+			[Bindable]
+			public var StickerButtonImage:Class;
+			
+			[Embed('../assets/toolsStencils.png')]
+			[Bindable]
+			public var StencilButtonImage:Class;
+			
+			[Bindable]
+			public var drawingCanvasHolder:DrawingCanvasHolderServer; 
+			
+			
+			//This holds whatever tool we're holding
+			private var toolHolder:UIComponent = new UIComponent();
+			
+			//We need the application scale a couple times
+			private var appScale:Number = FlexGlobals.topLevelApplication.runtimeDPI / FlexGlobals.topLevelApplication.applicationDPI;
+			
+			protected function toggleOpenMenu(event:MouseEvent):void
+			{
+				trace(openMenuImage.y);
+				if (currentState == "hidden")
+				{
+					currentState="shown";
+				}
+				else if (currentState == "shown")
+				{
+					currentState="shownToHidden";
+					previousDisplayArray = null;
+					backButton.enabled = false;
+					backButton.visible = false;
+				}
+				
+			}
+			
+			protected function undo(event:MouseEvent):void
+			{
+				drawingCanvasHolder.undo();
+			}
+			
+			protected function doneClicked(event:MouseEvent):void
+			{
+				var shareScreen:ShareScreenServer = new ShareScreenServer();
+				this.addElement(shareScreen);
+				shareScreen.drawingCanvasHolder = drawingCanvasHolder;
+				shareScreen.backButton.addEventListener(MouseEvent.CLICK, closeSharePage);
+				shareScreen.backButton.addEventListener(TouchEvent.TOUCH_BEGIN, closeSharePage);
+				shareScreen.addEventListener(Event.COMPLETE, closeSharePage);
+				
+				function closeSharePage(e:Event):void
+				{
+					shareScreen.backButton.removeEventListener(MouseEvent.CLICK, closeSharePage);
+					shareScreen.backButton.removeEventListener(TouchEvent.TOUCH_BEGIN, closeSharePage);
+					removeElement(shareScreen);
+					shareScreen = null;
+				}
+			}
+			
+			protected function finishCloseProceedures():void
+			{	
+				currentDisplayArray = topMenuArray;
+				
+				if (menu.contains(toolHolder))
+					menu.removeElement(toolHolder);
+				
+				currentState="hidden";
+			}
+			
+			protected function horizontalListChanging():void
+			{
+				if (horizontalList.selectedIndex != -1)
+				{
+					previousDisplayArray = currentDisplayArray;
+					backButton.enabled = true;
+					backButton.visible = true;
+				}
+				trace("Click");
+				//We can use the selected index to see what just got clicked in our current array
+				switch (currentDisplayArray)
+				{
+					case topMenuArray:
+						if (horizontalList.selectedIndex == 0)//Brushes
+							currentDisplayArray = brushMenuArray;
+						else if (horizontalList.selectedIndex == 1)//Tools
+							currentDisplayArray = toolMenuArray;
+						break;
+					case brushMenuArray:
+						if (horizontalList.selectedIndex == -1)
+							previousDisplayArray = topMenuArray;
+						else if (horizontalList.selectedIndex == 0)//Change Brush Color
+						{
+							currentDisplayArray = null;
+							toolHolder = new UIComponent();
+							
+							var CP:ColorPicker = new ColorPicker();
+							toolHolder.addChild(CP);
+							
+							toolHolder.x = ((FlexGlobals.topLevelApplication.width * appScale) / 2 - CP.width/2);
+							toolHolder.y = ((FlexGlobals.topLevelApplication.height * appScale) * 0.1);
+							menu.addElement( toolHolder );
+						}
+						else if (horizontalList.selectedIndex == 1)//Change Brush Size
+						{
+							currentDisplayArray = null;
+							toolHolder = new UIComponent();		
+							
+							//make size picker here
+							var SP:SizePicker = new SizePicker();
+							toolHolder.addChild(SP);
+							
+							toolHolder.x = ((FlexGlobals.topLevelApplication.width * appScale) / 2 - SP.width/2);
+							toolHolder.y = ((FlexGlobals.topLevelApplication.height * appScale) * 0.2);
+							menu.addElement( toolHolder );
+						}
+						else if (horizontalList.selectedIndex == 2)//Change Brush Type
+						{
+							currentDisplayArray = null;
+							toolHolder = new UIComponent();
+							
+							var BTP:BrushTypePicker = new BrushTypePicker();
+							toolHolder.addChild(BTP);
+							
+							toolHolder.x = ((FlexGlobals.topLevelApplication.width * appScale) / 2 - BTP.width/2);
+							toolHolder.y = ((FlexGlobals.topLevelApplication.height * appScale) * 0.2);
+							menu.addElement( toolHolder );
+						}
+						break;
+					case toolMenuArray:
+						if (horizontalList.selectedIndex == -1)
+							previousDisplayArray = topMenuArray;
+						
+						else if (horizontalList.selectedIndex == 0)//Sticker menu
+						{
+							currentDisplayArray = null;
+							var sticker:StickerPlacer = new StickerPlacer(drawingCanvasHolder);
+							sticker.x = ((drawingCanvasHolder.canvas.width) / 2 - sticker.width/2);
+							sticker.y = ((drawingCanvasHolder.canvas.height) / 2 - sticker.height/2);
+							drawingCanvasHolder.canvas.addChild(sticker);
+							toggleOpenMenu(new MouseEvent(MouseEvent.CLICK));
+						}
+						else if (horizontalList.selectedIndex == 1)//Stencil menu
+						{
+							currentDisplayArray = null;
+							var stencil:StencilPlacer = new StencilPlacer(drawingCanvasHolder);
+							stencil.x = ((drawingCanvasHolder.canvas.width) / 2 - stencil.width/2);
+							stencil.y = ((drawingCanvasHolder.canvas.height) / 2 - stencil.height/2);
+							drawingCanvasHolder.canvas.addChild(stencil);
+							toggleOpenMenu(new MouseEvent(MouseEvent.CLICK));
+						}
+				}
+			}
+			
+			protected function navBack(event:MouseEvent):void
+			{
+				currentDisplayArray = previousDisplayArray;
+				
+				if (currentDisplayArray == topMenuArray)
+				{
+					backButton.enabled = false;
+					backButton.visible = false;
+				}
+				
+				else
+				{
+					backButton.enabled = true;
+					backButton.visible = true;
+				}
+				
+				if (menu.contains(toolHolder))
+					menu.removeElement(toolHolder);
+				
+				horizontalListChanging();
+			}
+			
+			protected function checkTime():void
+			{
+				trace("You are here");
+			}
+			
+			protected function ready(event:Event):void
+			{
+				currentDisplayArray = topMenuArray;
+			}
+			
+		]]>
+	</fx:Script>
+	
+	<s:states>
+		<s:State name="hidden" />
+		<s:State name="shownToHidden"/>
+		<s:State name="shown" />
+		<s:State name="menuOpen" />
+	</s:states>
+	
+	<s:Group id="menu" excludeFrom="hidden" x="0" width="100%" height="100%" interactionMode="mouse" >
+		<!-- Layer 1, background -->
+		<s:Rect id="background" width="100%" height="100%" alpha="0.8" >
+			<s:fill>
+				<s:SolidColor color="#000000">
+				</s:SolidColor>
+			</s:fill>
+		</s:Rect>
+		
+		<s:List id="horizontalList" dataProvider="{currentDisplayArray}" 
+				itemRenderer="renderers.ListImageRenderer" 
+				width="850"
+				left="{(1024-850)/2}"
+				bottom="120"
+				touchDelay="0"
+				
+				click="horizontalListChanging()"
+				change="checkTime()"
+				contentBackgroundAlpha="0"
+				>
+			<s:layout>
+				<s:HorizontalLayout columnWidth="80" gap="5" />
+			</s:layout>
+		</s:List>
+		
+		<s:Image id="backButton" source="@Embed(source='../assets/back.png')" click="navBack(event)"
+				 bottom="50" left="{(1024-850)/2}" visible="false" enabled="false"/>
+	</s:Group>
+	
+	<s:Group id="toggleMenu" width="100%" height="100%">
+		<s:Image bottom="30" horizontalCenter="0" horizontalAlign="center" 
+				 width="50" height="50" id="openMenuImage"
+				 source="@Embed(source='../assets/openMenu.png')" click="toggleOpenMenu(event)"/>
+	</s:Group>
+	<s:Group id="doneButtonGroup" width="100%" height="100%">
+		<s:Image bottom="30" left="100"
+				 width="50" height="50" id="doneButtonImage"
+				 source="@Embed(source='../assets/doneButton.png')" click="doneClicked(event)"/>
+	</s:Group>
+	<s:Group id="undoButtonGroup" width="100%" height="100%">
+		<s:Image bottom="30" right="100" 
+				 width="50" height="50" id="undoButtonImage"
+				 source="@Embed(source='../assets/undoButton.png')" click="undo(event)"/>
+	</s:Group>
+	
+</s:Group>

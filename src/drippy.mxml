@@ -1,0 +1,506 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009" 
+					   xmlns:s="library://ns.adobe.com/flex/spark" 
+					   xmlns:mx="library://ns.adobe.com/flex/mx"
+					   width="1024" height="768" backgroundColor="0xFFFFFF"
+					   applicationComplete="startServer(event)"
+					   closing="quittingTime(event)" xmlns:components="components.*"
+					   >
+	<fx:Script>
+		<![CDATA[
+			import config.ServerConfiguration;
+			
+			import connection.ConnectionEvent;
+			import connection.ConnectionManager;
+			
+			import flash.net.registerClassAlias;
+			
+			import mx.core.FlexGlobals;
+			import mx.events.FlexEvent;
+			import mx.graphics.codec.PNGEncoder;
+			import mx.messaging.config.ServerConfig;
+			
+			import objects.DrawableBase;
+			import objects.DrawingCanvas;
+			import objects.DrawingCanvasHolderServer;
+			import objects.DrippyClient;
+			import objects.FillRequest;
+			import objects.LayerIndex;
+			import objects.ManagementRequest;
+			import objects.MultiPointLine;
+			import objects.SerializedBitmap;
+			import objects.StencilRequest;
+			import objects.StickerRequest;
+			import objects.TransformContainer;
+			import objects.UndoRequest;
+			
+			import org.osmf.events.TimeEvent;
+			
+			import prefs.ClientPreferences;
+			import prefs.ServerPreferences;
+			
+			import spark.primitives.Line;
+			
+			import utils.FileUtils;
+			import utils.ServerUtils;
+			
+			private var serverSocket:ServerSocket = new ServerSocket();
+			
+			private var localIP:String = "0.0.0.0";
+			private var localPort:int = 8214; //Port that our service is running on (should be same as client's)
+			
+			private var serverPrefs:ServerPreferences;
+			
+			private var bFullscreen:Boolean = true;
+			//Supported scale modes are none, stretch, letterbox
+			private var bgScaleMode:String = "letterbox";
+			
+			//We need an array of unserialized stickers so we can draw them
+			private var stickerArray:Array = [];
+			
+			[Bindable]
+			private var canvasHolder:DrawingCanvasHolderServer; 
+			
+			private var canvasHolderBitmapCache:Bitmap;
+			private var canvasRenderSprite:TransformContainer;
+			
+			protected function startServer(event:FlexEvent):void
+			{
+				ServerConfiguration.loadConfiguration();
+				
+				if (bFullscreen)
+				{
+					width = Capabilities.screenResolutionX;
+					height = Capabilities.screenResolutionY;
+					stage.displayState = StageDisplayState.FULL_SCREEN_INTERACTIVE;
+				}
+				
+				Multitouch.inputMode = MultitouchInputMode.TOUCH_POINT;
+				//trace(Multitouch.maxTouchPoints);
+				
+				canvasHolder = new DrawingCanvasHolderServer();
+				canvasHolder.myMenu = myMenu;
+				canvasHolderBitmapCache = new Bitmap(new BitmapData(stage.stageWidth, stage.stageHeight), "auto", true);
+				canvasHolderBitmapCache.addEventListener(Event.ENTER_FRAME, updateBitmapCache);
+				canvasRenderSprite = new TransformContainer(canvasHolderBitmapCache);
+				stage.addChild(canvasHolder);
+				//Hide the canvas holder so updates will render
+				canvasHolder.alpha = 0;
+				stage.addChild(canvasRenderSprite);
+				
+				canvasHolder.backgroundHolder = new Sprite();
+				canvasHolder.addChild(canvasHolder.backgroundHolder);
+				loadImage(ServerConfiguration.backgroundDir + ServerConfiguration.defaultBackground, "background");
+				
+				canvasHolder.canvas = new DrawingCanvas(stage.stageWidth, stage.stageHeight);
+				canvasHolder.addChild(canvasHolder.canvas);
+				
+				canvasHolder.foregroundHolder = new Sprite();
+				canvasHolder.foregroundHolder.mouseEnabled = false;
+				canvasHolder.addChild(canvasHolder.foregroundHolder);
+				loadImage(ServerConfiguration.foregroundDir + ServerConfiguration.defaultForeground, "foreground");
+				
+				//To make sure our canvas gets all the events that the foregroundHolder gets...
+				canvasHolder.canvas.addEventListener(MouseEvent.MOUSE_DOWN, canvasHolder.doBrushwork);
+				
+				canvasHolder.canvas.addEventListener(TouchEvent.TOUCH_BEGIN, canvasHolder.doBrushwork);
+				
+				
+				canvasHolder.addChild(canvasHolder.myMenu);
+				
+				stage.addEventListener(KeyboardEvent.KEY_DOWN, checkKeys);
+				
+				serverPrefs = new ServerPreferences(stage.stageHeight, stage.stageWidth);
+				serverPrefs.bgScaleMode = bgScaleMode;
+				canvasHolder.serverPrefs = serverPrefs;
+				
+				//Stickers and stencils get loaded into our serverPrefs, which we'll need initialzed first
+				loadStickers();
+				loadStencils();
+				
+				try
+				{
+					serverSocket.bind(localPort, localIP);
+				}
+				catch(e:IOError)
+				{
+					serverSocket = new ServerSocket();
+					//serverSocket.close();
+					serverSocket.bind(localPort, localIP);
+				}
+				serverSocket.addEventListener(ServerSocketConnectEvent.CONNECT, onConnect);
+				serverSocket.listen();
+				logField.text += ("Bound to: " + serverSocket.localAddress + ":" + serverSocket.localPort + "\n");
+				
+				registerClassAlias("ServerPreferences", ServerPreferences);
+				registerClassAlias("ClientPreferences", ClientPreferences);
+				registerClassAlias("Point", Point);
+				registerClassAlias("LayerIndex", LayerIndex);
+				registerClassAlias("MultiPointLine", MultiPointLine);
+				registerClassAlias("FillRequest", FillRequest);
+				registerClassAlias("SerializedBitmap", SerializedBitmap);
+				registerClassAlias("StickerRequest", StickerRequest);
+				registerClassAlias("StencilRequest", StencilRequest);
+				registerClassAlias("UndoRequest", UndoRequest);
+				registerClassAlias("ManagementRequest", ManagementRequest);
+				
+				stage.addEventListener(MouseEvent.RIGHT_CLICK, clearCanvas);
+				
+				/*var m:Matrix = new Matrix();
+				m.b = 10 * Math.PI/180;
+				m.concat(stage.transform.matrix);
+				stage.transform.matrix = m;*/
+			}
+			
+			private function updateBitmapCache(e:Event):void
+			{
+				canvasHolderBitmapCache.bitmapData.draw(canvasHolder);
+				/*
+				canvasRenderSprite.graphics.clear();
+				
+				canvasRenderSprite.graphics.beginBitmapFill(canvasHolderBitmapCache.bitmapData, null, false, true);
+				canvasRenderSprite.graphics.drawTriangles(
+					//Vector of Numbers, points for triangles
+					Vector.<Number>([0, 0, 
+						canvasHolderBitmapCache.width, 0,
+						(canvasHolderBitmapCache.width)*0.35, (canvasHolderBitmapCache.height)*0.35,
+						0, 0+canvasHolderBitmapCache.height,
+						(canvasHolderBitmapCache.width)*0.7, (canvasHolderBitmapCache.height)*0.7]), 
+					//Vector of ints, triangles defined by previous Vector.<Number> (index buffer)
+					Vector.<int>([0,1,2, 
+						2,1,4,
+						2,3,4,
+						3,0,2]),
+					//Vector of Numbers, where the points are on the UVW map, corresponds with order of the first Vector.<Number> 
+					Vector.<Number>([0,0, 
+						1,0, 
+						0.5,0.5,
+						0,1, 
+						1,1]));
+				canvasRenderSprite.graphics.endFill();*/
+			} 
+			
+			private function rebroadcastEventToCanvas(e:Event):void
+			{
+				/*if (canvasHolder.bMouseEvents == true && e is MouseEvent)
+					new Mouseev
+					
+					*/
+			}
+			
+			//Depreciated, happens in init
+			/*protected function createbind(event:MouseEvent):void
+			{
+				if (serverSocket.bound)
+				{
+					serverSocket.close();
+					serverSocket = new ServerSocket();
+				}
+				
+				try
+				{
+					serverSocket.bind(localPort, localIP);
+				}
+				catch(e:IOError)
+				{
+					trace("Socket issues");
+				}
+				serverSocket.addEventListener(ServerSocketConnectEvent.CONNECT, onConnect);
+				serverSocket.listen();
+				logField.text += ("Bound to: " + serverSocket.localAddress + ":" + serverSocket.localPort + "\n");
+				
+			}*/
+			
+			private function onConnect(e:ServerSocketConnectEvent):void
+			{
+				var client:DrippyClient = new DrippyClient();
+				client.CM.clientSocket = e.socket;
+				client.CM.clientSocket.addEventListener(Event.CLOSE, clientSocketClosed);
+				
+				client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_CLIENTPREFERENCES, onClientPrefs);
+				client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_MULTIPOINTLINE, canvasHolder.onMultiPointLine);
+				client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_FILLREQUEST, canvasHolder.onFillRequest);
+				//client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_SPRITE, canvasHolder.onSprite);
+				client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_STRING, onString);
+				client.CM.addEventListener(ConnectionEvent.ON_RECIEVE_STICKERREQUEST, canvasHolder.onStickerRequest);
+				client.CM.addEventListener(ConnectionEvent.ON_RECIEVE_STENCILREQUEST, canvasHolder.onStencilRequest);
+				client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_UNDO, canvasHolder.onUndoRequest);
+				client.CM.addEventListener(ConnectionEvent.ON_RECEIVE_MAN_REQ, onManagementReq);
+				//client.clientSocket.addEventListener(ProgressEvent.SOCKET_DATA, onClientSocketData);
+				ServerUtils.clientArray.push(client);
+				
+				//Log connection on our side
+				//logField.text += ("Connection from " + client.clientSocket.remoteAddress + ":" + localPort + "\n");
+			}
+			
+			private function clientSocketClosed(e:Event):void
+			{
+				//This fires when a client disconnects (by closing the program).
+				//TODO: Find a way to reuse connections for dropped clients
+				//Since the target of this event is the socket, it's parent's parent is the client
+				for (var i:Number = 0; i<ServerUtils.clientArray.length; i++)
+				{
+					if(DrippyClient(ServerUtils.clientArray[i]).CM.clientSocket == e.target)
+					{
+						ServerUtils.clientArray.slice(i,1);
+					}
+				}
+			}
+			
+			private function onClientPrefs(e:ConnectionEvent):void
+			{
+				//First we need to figure out what client this is from
+				var sendingClient:DrippyClient = ServerUtils.getClientFromConnection(e);
+				
+				sendingClient.preferences = e.receivedObject as ClientPreferences;
+				//We need an initial line
+				canvasHolder.sendLineIndex(sendingClient.CM);
+				
+				catchUpClient(sendingClient.CM);
+			}
+			
+			private function onManagementReq(e:ConnectionEvent):void
+			{
+				var manReq:ManagementRequest = e.receivedObject as ManagementRequest;
+				var client:DrippyClient;
+				trace(ServerConfiguration.managementPasswordHash);
+				if (manReq.password == ServerConfiguration.managementPasswordHash)
+				{
+					ServerUtils.moveClientToManager(e);
+					client = ServerUtils.getManagerFromConnection(e);
+					client.CM.queueObjectToSend("password_accepted");
+				}
+				else
+				{
+					client = ServerUtils.getClientFromConnection(e);
+					client.CM.queueObjectToSend("password_rejected");
+				}
+			}
+			
+			private function onString(e:ConnectionEvent):void
+			{
+				//First we need to figure out what client this is from
+				var sendingClient:DrippyClient = ServerUtils.getClientFromConnection(e);
+				
+				var sentAsString:String = String(e.receivedObject);
+				
+				switch (sentAsString)
+				{
+					case "req_name":
+						sendName(sendingClient.CM);
+						break;
+					case "req_prefs":
+						sendPrefs(sendingClient.CM);
+						break;
+					case "req_line_index":
+						canvasHolder.sendLineIndex(sendingClient.CM);
+						break;
+					case "req_disconnect":
+						disconnectClient(sendingClient.CM);
+						break;
+					case "man_ClearAndSave":
+						saveAndClear();
+						break;
+					case "man_ClearAndTrash":
+						clearCanvas();
+						break;
+					case "man_Undo":
+						canvasHolder.masterUndo();
+						break;
+					default:
+						logField.text += ("Recieved: " + sentAsString + "\n");
+				}
+				
+				/*if (sentAsString == "req_name")
+					sendName(sendingClient.CM);
+				else if (sentAsString == "req_prefs")
+					sendPrefs(sendingClient.CM);
+				else if (sentAsString == "req_line_index")
+					canvasHolder.sendLineIndex(sendingClient.CM);
+				else if (sentAsString == "req_disconnect")
+					disconnectClient(sendingClient.CM);
+				
+				else if (sentAsString != null)
+					logField.text += ("Recieved: " + sentAsString + "\n");*/
+			}
+			
+			private function loadImage(filePath:String="background.png", type:String="background"):void
+			{
+				var imgLoader:Loader = new Loader();
+				imgLoader.contentLoaderInfo.addEventListener(Event.COMPLETE, imageLoaded);
+				imgLoader.load(new URLRequest(filePath));
+				
+				function imageLoaded(e:Event):void
+				{
+					var b:Bitmap = Bitmap(e.target.content);
+					b.smoothing = true;
+					if (bgScaleMode == "stretch")
+					{
+						b.width = stage.stageWidth;
+						b.height = stage.stageHeight;
+					}
+					else if (bgScaleMode == "letterbox")
+					{
+						var bgRatio:Number = b.width / b.height;
+						if (b.width < b.height)
+						{
+							b.width = stage.stageWidth;
+							b.height = stage.stageWidth / bgRatio;
+							b.y = (stage.stageHeight/2) - (b.height/2);
+						}
+						else 
+						{
+							b.height = stage.stageHeight;
+							b.width = stage.stageHeight * bgRatio;
+							b.x = (stage.stageWidth/2) - (b.width/2);
+						}
+					}
+					
+					if(type == "background")
+					{
+						prepareBackground(b);
+					}
+					else if(type == "foreground")
+					{
+						prepareForeground(b);
+					}
+				}
+			}
+			
+			
+			private function prepareBackground(b:Bitmap):void
+			{	
+				var fill:Bitmap = new Bitmap(new BitmapData(stage.stageWidth, stage.stageHeight, false, 0x000000));
+				canvasHolder.backgroundHolder.addChild(fill);
+				canvasHolder.backgroundHolder.addChild(b);
+				serverPrefs.background = new SerializedBitmap(b);
+			}
+			
+			private function prepareForeground(b:Bitmap):void
+			{
+				//We want a full sized foreground to handle clicks/touches on the whole stage
+				var fill:Bitmap = new Bitmap(new BitmapData(stage.stageWidth, stage.stageHeight, true, 0x000000FF));
+				canvasHolder.foregroundHolder.addChild(fill);
+				canvasHolder.foregroundHolder.addChild(b);
+				serverPrefs.foreground = new SerializedBitmap(b);
+			}
+			
+			private function sendName(cm:ConnectionManager):void
+			{
+				cm.queueObjectToSend(ServerConfiguration.serverName);
+				
+				//Since this connection was only meant to get the server's name and IP to the client, 
+				//make sure to remove it from our client array
+				for (var i:Number=0; i<ServerUtils.clientArray.length; i++)
+				{
+					if (ServerUtils.clientArray[i].CM.clientSocket == cm.clientSocket)
+						ServerUtils.clientArray.splice(i, 1);
+				}
+			}
+			
+			private function sendPrefs(cm:ConnectionManager):void
+			{
+				cm.queueObjectToSend(serverPrefs);
+			}
+			
+			private function disconnectClient(cm:ConnectionManager):void
+			{
+				for (var i:Number=0; i<ServerUtils.clientArray.length; i++)
+				{
+					if (ServerUtils.clientArray[i].CM.clientSocket == cm.clientSocket)
+						ServerUtils.clientArray.splice(i, 1);
+				}
+				
+				//If our last client just disconnected and no one was drawing on server...
+				if (ServerUtils.clientArray.length < 1 && canvasHolder.canvas.myLayerIndexes.length < 1)
+				{
+					saveAndClear();
+				}
+			}
+			
+			private function catchUpClient(cm:ConnectionManager):void
+			{
+				for each(var o:DrawableBase in canvasHolder.canvas.drawnObjectArray)
+				{
+					cm.queueObjectToSend(o);
+				}
+			}
+			
+			
+			
+			/*private function sendACK(cm:ConnectionManager):void
+			{
+				cm.queueObjectToSend("ack_object");
+			}*/
+			
+			private function saveAndClear():void
+			{
+				canvasHolder.saveAndClear();
+				ServerUtils.rebroadcastObject("req_clear");
+			}
+			
+			private function clearCanvas(e:MouseEvent = null):void
+			{
+				canvasHolder.canvas.clear();
+				ServerUtils.rebroadcastObject("req_clear");
+			}
+			
+			protected function checkKeys(e:KeyboardEvent):void
+			{
+				if (e.keyCode == Keyboard.ESCAPE)
+				{
+					serverSocket.close();
+					NativeApplication.nativeApplication.exit();
+				}
+				
+				else if (e.ctrlKey && e.keyCode == Keyboard.X)
+				{
+					ServerConfiguration.saveConfiguration();
+				}
+			}
+			
+			private function quittingTime(e:Event):void
+			{
+				//Don't forget to close the active socket before closing! We'll get an error if we don't next time we try to bind!
+				serverSocket.close();
+				//NativeApplication.nativeApplication.exit();
+			}
+			
+			protected function closeApp(event:Event):void
+			{
+				serverSocket.close();
+				//clientSocket.close();
+				
+				NativeApplication.nativeApplication.exit();
+			}
+			
+			private function loadStickers():void
+			{
+				//We need to store our stickers elsewhere, serverPrefs get sent and nonserialized members can't go...
+				FileUtils.loadImagesAtURL(ServerConfiguration.stickersDir, canvasHolder.serverPrefs.stickerArray, canvasHolder.serverPrefs.reconstructedStickers, doneLoading); 
+				
+				function doneLoading():void
+				{
+					canvasHolder.canvas.stickerArray = canvasHolder.serverPrefs.reconstructedStickers;
+				}
+			}
+			
+			private function loadStencils():void
+			{
+				FileUtils.loadImagesAtURL(ServerConfiguration.stencilsDir, canvasHolder.serverPrefs.stencilArray, canvasHolder.serverPrefs.reconstructedStencils, doneLoading);
+				
+				function doneLoading():void
+				{
+					//Not sure if we have to do anything here, guess we'll find out though...
+				}
+			}
+			
+		]]>
+	</fx:Script>
+	<fx:Declarations>
+		<!-- Place non-visual elements (e.g., services, value objects) here -->
+	</fx:Declarations>
+	
+	<s:TextArea id="logField" x="33" y="177" width="302" height="136" visible="false" enabled="false"/>
+	<components:MenuBar id="myMenu" drawingCanvasHolder="{canvasHolder}" width="100%" height="100%"/>
+</s:WindowedApplication>

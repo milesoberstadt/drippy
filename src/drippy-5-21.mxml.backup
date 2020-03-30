@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009" 
+					   xmlns:s="library://ns.adobe.com/flex/spark" 
+					   xmlns:mx="library://ns.adobe.com/flex/mx"
+					   width="1024" height="768" 
+					   applicationComplete="startServer(event)"
+					   click="showUI(event)"
+					   >
+	<fx:Script>
+		<![CDATA[
+			import flash.net.registerClassAlias;
+			
+			import mx.core.FlexGlobals;
+			import mx.events.FlexEvent;
+			import mx.messaging.config.ServerConfig;
+			
+			import objects.DrawingCanvas;
+			
+			import prefs.ClientPreferences;
+			import prefs.ServerPreferences;
+			
+			private var serverSocket:ServerSocket = new ServerSocket();
+			
+			//We'll probably need one of these for each client...later
+			private var clientSocket:Socket;
+			private var lineLayer:Sprite = new Sprite();
+			
+			private var localIP:String = "0.0.0.0";
+			private var localPort:int = 8214; //Port that our service is running on (should be same as client's)
+			
+			private var serverName:String = "My First Server";
+			private var clientPrefs:ClientPreferences;
+			private var serverPrefs:ServerPreferences;
+			
+			private var canvas:DrawingCanvas;
+			
+			private var startPoint:Point;
+			private var lastPoint:Point;
+			private var pointCount:Number = 0;
+			
+			private var scale:Number;
+			
+			protected function startServer(event:FlexEvent):void
+			{
+				scale = FlexGlobals.topLevelApplication.runtimeDPI / FlexGlobals.topLevelApplication.applicationDPI;
+				
+				canvas = new DrawingCanvas(this.width, this.height);
+				stage.addChild(canvas);
+				//Bring our quit button up front
+				var closeBTN:Button = new Button();
+				closeBTN.x = 50;
+				closeBTN.height = 50;
+				closeBTN.width = 50;
+				closeBTN.y = 50;
+				closeBTN.label = "Close";
+				closeBTN.addEventListener(TouchEvent.TOUCH_END, closeApp);
+				closeBTN.addEventListener(MouseEvent.CLICK, closeApp);
+				stage.addChild(closeBTN);
+				stage.addEventListener(KeyboardEvent.KEY_DOWN, checkClose);
+				//<s:Button id="closeBTN" x="50" y="50" label="Close" click="closeApp(event)"/>
+				//closeBTN.parent.setChildIndex(closeBTN, closeBTN.parent.numChildren-1);
+				
+				serverPrefs = new ServerPreferences(this.height, this.width);
+				
+				try
+				{
+					serverSocket.bind(localPort, localIP);
+				}
+				catch(e:IOError)
+				{
+					serverSocket = new ServerSocket();
+					//serverSocket.close();
+					serverSocket.bind(localPort, localIP);
+				}
+				serverSocket.addEventListener(ServerSocketConnectEvent.CONNECT, onConnect);
+				serverSocket.listen();
+				logField.text += ("Bound to: " + serverSocket.localAddress + ":" + serverSocket.localPort + "\n");
+				
+				registerClassAlias("ServerPreferences", ServerPreferences);
+				registerClassAlias("ClientPreferences", ClientPreferences);
+				registerClassAlias("Point", Point);
+				
+				stage.addEventListener(MouseEvent.RIGHT_CLICK, clearCanvas);
+			}
+			
+			protected function createbind(event:MouseEvent):void
+			{
+				if (serverSocket.bound)
+				{
+					serverSocket.close();
+					serverSocket = new ServerSocket();
+				}
+				
+				try
+				{
+					serverSocket.bind(localPort, localIP);
+				}
+				catch(e:IOError)
+				{
+					trace("Socket issues");
+				}
+				serverSocket.addEventListener(ServerSocketConnectEvent.CONNECT, onConnect);
+				serverSocket.listen();
+				logField.text += ("Bound to: " + serverSocket.localAddress + ":" + serverSocket.localPort + "\n");
+				
+			}
+			
+			private function onConnect(e:ServerSocketConnectEvent):void
+			{
+				clientSocket = e.socket;
+				clientSocket.addEventListener(ProgressEvent.SOCKET_DATA, onClientSocketData);
+				
+				//Log connection on our side
+				logField.text += ("Connection from " + clientSocket.remoteAddress + ":" + localPort + "\n");
+				pointCount = 0;
+			}
+			
+			private function onClientSocketData(e:ProgressEvent):void
+			{
+				pointCount++;
+				trace(pointCount + "  " + e.bytesLoaded);
+				if (e.bytesLoaded > 100)
+					trace("Big packet, let's figure this out");
+				//trace(e.bytesTotal);
+				
+				var sentObject:Object = new Object();
+				trace("Bytes before: " + clientSocket.bytesAvailable);
+				var testArray:ByteArray = new ByteArray();
+				clientSocket.readBytes(testArray, testArray.length);
+				trace(testArray.toString());
+				sentObject = testArray as Object;
+				//sentObject = clientSocket.readObject();
+				trace("Bytes after: " + clientSocket.bytesAvailable);
+				var sentAsString:String; //= sentObject as String;
+				var line:Sprite; 
+				if (sentObject is String)
+				{
+					sentAsString = String(sentObject);
+					
+					if (sentAsString == "req_name")
+						sendName();
+					else if (sentAsString == "req_prefs")
+						sendPrefs();
+					else if (sentAsString != null)
+						logField.text += ("Recieved: " + sentAsString + "\n");
+				}
+				
+				else if (sentObject is Sprite)
+				{
+					line = sentObject.line;
+					if (line != null)
+						canvas.draw(line);
+				}
+				
+				else if (sentObject is ClientPreferences)
+				{
+					trace("Got prefs");
+				}
+				
+				else if (sentObject is Point)
+				{
+					var currentPoint:Point = sentObject as Point;
+					if (startPoint == null)
+					{
+						startPoint = sentObject as Point;
+						lastPoint = sentObject as Point;
+					}
+					
+					else if (currentPoint.x < 0 && currentPoint.y < 0)
+					{
+						//Same point twice is end of line
+						startPoint = null;
+						trace("End of line");
+						return;
+					}
+					
+					else 
+					{
+						//trace("x: " + currentPoint.x + " y: " + currentPoint.y);
+					}
+					
+					lineLayer.graphics.clear();
+					lineLayer.graphics.lineStyle(5,0x000000);
+					lineLayer.graphics.moveTo(lastPoint.x, lastPoint.y);
+					lineLayer.graphics.lineTo((currentPoint.x*scale), (currentPoint.y*scale));
+					
+					canvas.draw(lineLayer);
+					
+					lastPoint = sentObject as Point;
+					
+					//TODO: impliment end of line
+				}
+				
+				else
+					logField.text += ("Recieved unknown object type\n");
+				
+			}
+			
+			private function sendName():void
+			{
+				//Send our client friendly name
+				clientSocket.writeUTFBytes(serverName);
+				clientSocket.flush();
+			}
+			
+			private function sendPrefs():void
+			{
+				clientSocket.writeObject(serverPrefs);
+				clientSocket.flush();
+			}
+			
+			private function clearCanvas(e:MouseEvent):void
+			{
+				canvas.clear();
+			}
+			
+			protected function checkClose(e:KeyboardEvent):void
+			{
+				if (e.keyCode == Keyboard.ESCAPE)
+				{
+					serverSocket.close();
+					NativeApplication.nativeApplication.exit();
+				}
+			}
+			
+			protected function closeApp(event:Event):void
+			{
+				serverSocket.close();
+				//clientSocket.close();
+				
+				NativeApplication.nativeApplication.exit();
+			}
+			
+			protected function showUI(event:MouseEvent):void
+			{
+				//closeBTN.visible = true;
+				//closeBTN.enabled = true;
+				
+				var hideUITimer:Timer = new Timer(5000, 1);
+				hideUITimer.addEventListener(TimerEvent.TIMER, hideUI);
+				hideUITimer.start();
+			}
+			
+			private function hideUI(e:TimerEvent):void
+			{
+				//closeBTN.visible = true;
+				//closeBTN.enabled = true;
+			}
+			
+		]]>
+	</fx:Script>
+	<fx:Declarations>
+		<!-- Place non-visual elements (e.g., services, value objects) here -->
+	</fx:Declarations>
+	
+	<s:Button id="bind" x="50" y="320" label="Bind" click="createbind(event)" visible="false" enabled="false"/>
+	
+	<s:TextArea id="logField" x="33" y="177" width="302" height="136" visible="false" enabled="false"/>
+</s:WindowedApplication>
